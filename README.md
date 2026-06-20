@@ -10,11 +10,11 @@ que integra o pipeline completo:
 
 | Módulo                | Executável  | Função                                                              |
 |------------------------|-------------|----------------------------------------------------------------------|
-| Macro-Montador         | `z80macro`  | Expande macros (uma passagem, com aninhamento) — fonte → fonte       |
-| Montador               | `z80asm`    | Monta um `.asm` em código objeto `.obj` (dois passos)                 |
-| Ligador                | `z80link`   | Liga um ou mais `.obj` em um executável `.exe` (dois passos)          |
-| Executor / Emulador    | `z80exec`   | Carrega e executa um `.exe` em uma CPU Z80 emulada                   |
-| Interface Gráfica      | `z80vm-gui` | GUI Qt5 que integra os quatro módulos acima                          |
+| Macro-Montador         | `macro`  | Expande macros (uma passagem, com aninhamento) — fonte → fonte       |
+| Montador               | `asm`    | Monta um `.asm` em código objeto `.obj` (dois passos)                 |
+| Ligador                | `link`   | Liga um ou mais `.obj` em um executável `.exe` (dois passos)          |
+| Executor / Emulador    | `exec`   | Carrega e executa um `.exe` em uma CPU Z80 emulada                   |
+| Interface Gráfica      | `gui` | GUI Qt5 que integra os quatro módulos acima                          |
 
 ---
 
@@ -45,11 +45,11 @@ make -j$(nproc)
 Os executáveis são gerados em `build/bin/`:
 
 ```
-build/bin/z80macro
-build/bin/z80asm
-build/bin/z80link
-build/bin/z80exec
-build/bin/z80vm-gui     (somente se o Qt5 foi encontrado)
+build/bin/macro
+build/bin/asm
+build/bin/link
+build/bin/exec
+build/bin/gui     (somente se o Qt5 foi encontrado)
 ```
 
 Para compilar sem a GUI (por exemplo, em um ambiente sem Qt5):
@@ -68,40 +68,40 @@ make -j$(nproc)
      |
      v
 +-------------+   expande macros (1 passagem,
-|  z80macro   |   aninhamento de definicoes e
+|  macro   |   aninhamento de definicoes e
 | (chamado    |   chamadas)
 | automatic.  |--------------------------------+
-| por z80asm) |                                 |
+| por asm) |                                 |
 +-------------+                                 v
                                           +--------------+
-                                          |   z80asm     |
+                                          |   asm     |
                                           | (2 passos)   |
                                           +------+-------+
                                                  | .obj
                                                  v
                                           +--------------+
-                                          |   z80link    |
+                                          |   link    |
                                           | (2 passos)   |
                                           +------+-------+
                                                  | .exe
                                                  v
                                           +--------------+
-                                          |   z80exec    |
+                                          |   exec    |
                                           |  (CPU Z80    |
                                           |   emulada)   |
                                           +--------------+
 ```
 
-A GUI (`z80vm-gui`) executa exatamente este mesmo pipeline internamente,
+A GUI (`gui`) executa exatamente este mesmo pipeline internamente,
 adicionando visualização de registradores, flags, memória, pilha e tabela de
 símbolos a cada etapa.
 
 ---
 
-## 3. Macro-Montador (`z80macro`)
+## 3. Macro-Montador (`macro`)
 
 Implementado em **uma única passagem**, ativado automaticamente pelo módulo
-integrador do montador (`z80asm`) antes da montagem propriamente dita — não
+integrador do montador (`asm`) antes da montagem propriamente dita, não
 é necessário invocá-lo manualmente, embora isso também seja possível.
 
 ### Características
@@ -161,7 +161,7 @@ Expande para:
 ### Uso direto (entrada: fonte → saída: outro fonte)
 
 ```bash
-z80macro entrada.asm saida_expandida.asm
+macro entrada.asm saida_expandida.asm
 ```
 
 O programa recebe como entrada um arquivo fonte para montagem e gera como
@@ -170,14 +170,14 @@ para ser processado pelo montador.
 
 ---
 
-## 4. Montador (`z80asm`)
+## 4. Montador (`asm`)
 
 Montador de **dois passos** para o conjunto de instruções do Z80 (transferência
 de dados, aritméticas, lógicas, controle de fluxo, pilha e controle de
 execução), com suporte aos modos de endereçamento imediato, direto, indireto
 via registrador (HL, IX, IY), indexado (IX+d / IY+d) e implícito.
 
-Antes de iniciar a montagem, o `z80asm` invoca internamente o
+Antes de iniciar a montagem, o `asm` invoca internamente o
 **macro-montador** sobre o arquivo de entrada — esse é o "módulo principal
 integrador" mencionado no enunciado: o ponto único que ativa o
 processamento de macros antes de qualquer outra etapa.
@@ -207,8 +207,8 @@ localmente (declarados com `EXTERN`) geram entradas de **relocação**
 ### Uso
 
 ```bash
-z80asm entrada.asm saida.obj            # com expansão de macros (padrão)
-z80asm entrada.asm saida.obj --no-macro # pula a etapa de macros
+asm entrada.asm saida.obj            # com expansão de macros (padrão)
+asm entrada.asm saida.obj --no-macro # pula a etapa de macros
 ```
 
 A saída no console lista a tabela de símbolos resolvidos e, em caso de
@@ -216,7 +216,7 @@ erro, a lista de mensagens de erro com o número da linha correspondente.
 
 ---
 
-## 5. Ligador (`z80link`)
+## 5. Ligador (`link`)
 
 Implementado em **dois passos**, conforme exigido:
 
@@ -241,7 +241,7 @@ imediatamente — esse é o cenário de um **Carregador Absoluto**, que apenas
 copia os bytes para a memória sem nenhum processamento adicional.
 
 ```bash
-z80link -abs -o programa.exe -org 0000 modulo1.obj modulo2.obj
+link -abs -o programa.exe -org 0000 modulo1.obj modulo2.obj
 ```
 
 ### Modo `-reloc` — apenas Ligador (com Carregador Relocador)
@@ -251,12 +251,12 @@ aplica o patch definitivo nos bytes do executável — em vez disso, grava uma
 tabela de relocações pendentes (endereço, tipo, valor já resolvido) dentro
 do próprio arquivo `.exe`. A finalização da relocação fica a cargo do
 **Carregador Relocador**, executado no momento da carga (ver seção 6,
-opção `--load-addr` do `z80exec`), que pode posicionar o programa em
+opção `--load-addr` do `exec`), que pode posicionar o programa em
 qualquer endereço de memória — inclusive um endereço diferente do usado
 durante a ligação.
 
 ```bash
-z80link -reloc -o programa.exe -org 0000 modulo1.obj modulo2.obj
+link -reloc -o programa.exe -org 0000 modulo1.obj modulo2.obj
 ```
 
 ### Opções
@@ -277,7 +277,7 @@ z80link -reloc -o programa.exe -org 0000 modulo1.obj modulo2.obj
 
 ---
 
-## 6. Executor / Emulador (`z80exec`)
+## 6. Executor / Emulador (`exec`)
 
 Implementa a CPU Z80 completa: registradores principais (A, B, C, D, E, H,
 L), pares de 16 bits (AF, BC, DE, HL), registradores especiais (PC, SP, IX,
@@ -292,11 +292,11 @@ bit-test, instruções com IX/IY indexado, blocos LDIR/CPIR, etc.).
 Ao carregar um `.exe`:
 
 - Se o executável **não** possui relocações pendentes (gerado com
-  `z80link -abs`), o `z80exec` atua como um **Carregador Absoluto**: apenas
+  `link -abs`), o `exec` atua como um **Carregador Absoluto**: apenas
   copia os bytes para a memória no endereço gravado pelo ligador e inicia a
   execução.
 - Se o executável **possui** relocações pendentes (gerado com
-  `z80link -reloc`), o `z80exec` atua como **Carregador Relocador**:
+  `link -reloc`), o `exec` atua como **Carregador Relocador**:
   aplica as relocações pendentes no momento da carga, podendo inclusive
   reposicionar o programa em um endereço diferente do usado durante a
   ligação, através da opção `--load-addr`.
@@ -304,10 +304,10 @@ Ao carregar um `.exe`:
 ### Uso
 
 ```bash
-z80exec programa.exe                        # executa até HALT
-z80exec programa.exe --trace                 # imprime o estado a cada instrução
-z80exec programa.exe --max-cycles 100000      # limite de seguranca de ciclos
-z80exec programa.exe --load-addr 1000         # Carregador Relocador: carrega em 0x1000
+exec programa.exe                        # executa até HALT
+exec programa.exe --trace                 # imprime o estado a cada instrução
+exec programa.exe --max-cycles 100000      # limite de seguranca de ciclos
+exec programa.exe --load-addr 1000         # Carregador Relocador: carrega em 0x1000
 ```
 
 A saída em vídeo dos programas de teste é feita via a porta de I/O `0x00`
@@ -315,7 +315,7 @@ A saída em vídeo dos programas de teste é feita via a porta de I/O `0x00`
 
 ---
 
-## 7. Interface Gráfica (`z80vm-gui`)
+## 7. Interface Gráfica (`vm-gui`)
 
 A GUI Qt5 integra o pipeline completo em uma única janela:
 
@@ -326,7 +326,7 @@ A GUI Qt5 integra o pipeline completo em uma única janela:
   ligador → carregador/executor.
 - **Seletor de modo do ligador** (Ligador-Relocador / Ligador com
   Carregador Relocador), correspondendo às opções `-abs` / `-reloc` do
-  `z80link`.
+  `link`.
 - **Visualização de registradores** (A, F, B, C, D, E, H, L e pares de 16
   bits, PC, SP, IX, IY, I, R, IFF1/IFF2, estado de HALT), atualizada após
   cada instrução ou execução contínua.
@@ -343,7 +343,7 @@ A GUI Qt5 integra o pipeline completo em uma única janela:
 ### Execução
 
 ```bash
-./build/bin/z80vm-gui
+./build/bin/vm-gui
 ```
 
 ---
@@ -360,17 +360,17 @@ Z80/
 |   |-- expr.hpp             (avaliador de expressoes do montador)
 |   |-- encoding.hpp         (tabelas de codificacao de registradores/modos)
 |   |-- assembler.hpp        (montador de dois passos)
+|   |-- mainwindow.hpp       (janela principal - declaração)
 |   |-- objfmt.hpp           (serializacao do formato .obj)
 |   |-- linker.hpp           (ligador de dois passos + formato .exe)
 |   `-- cpu.hpp              (CPU Z80 emulada - executor)
 |-- src/
-|   |-- macro.cpp            (CLI do macro-montador: z80macro)
-|   |-- asm.cpp              (CLI do montador: z80asm - invoca o macro-montador)
-|   |-- link.cpp             (CLI do ligador: z80link)
-|   `-- exec.cpp             (CLI do executor: z80exec)
+|   |-- macro.cpp            (CLI do macro-montador: macro)
+|   |-- asm.cpp              (CLI do montador: asm - invoca o macro-montador)
+|   |-- link.cpp             (CLI do ligador: link)
+|   `-- exec.cpp             (CLI do executor: exec)
 |-- gui/
 |   |-- main.cpp             (ponto de entrada da aplicacao Qt5)
-|   |-- mainwindow.hpp       (janela principal - declaracao)
 |   `-- mainwindow.cpp       (janela principal - implementacao)
 `-- tests/                   (programas .asm de exemplo/teste)
     |-- test1.asm                  (macros aninhadas, loop, flags)
@@ -387,26 +387,26 @@ Z80/
 ### Programa único
 
 ```bash
-z80asm programa.asm programa.obj
-z80link -abs -o programa.exe -org 0000 programa.obj
-z80exec programa.exe
+asm programa.asm programa.obj
+link -abs -o programa.exe -org 0000 programa.obj
+exec programa.exe
 ```
 
 ### Múltiplos módulos com símbolos externos
 
 ```bash
-z80asm modulo_a.asm modulo_a.obj
-z80asm modulo_b.asm modulo_b.obj
-z80link -abs -o final.exe -org 0000 -m final.map modulo_a.obj modulo_b.obj
-z80exec final.exe
+asm modulo_a.asm modulo_a.obj
+asm modulo_b.asm modulo_b.obj
+link -abs -o final.exe -org 0000 -m final.map modulo_a.obj modulo_b.obj
+exec final.exe
 ```
 
 ### Ligação relocável + carga em endereço diferente
 
 ```bash
-z80asm programa.asm programa.obj
-z80link -reloc -o programa.exe -org 0000 programa.obj
-z80exec programa.exe --load-addr 1000     # Carregador Relocador reposiciona o programa
+asm programa.asm programa.obj
+link -reloc -o programa.exe -org 0000 programa.obj
+exec programa.exe --load-addr 1000     # Carregador Relocador reposiciona o programa
 ```
 
 ---
@@ -430,9 +430,9 @@ Para rodar manualmente qualquer teste:
 
 ```bash
 cd build/bin
-./z80asm ../../tests/test1.asm /tmp/test1.obj
-./z80link -o /tmp/test1.exe -org 0000 /tmp/test1.obj
-./z80exec /tmp/test1.exe
+./asm ../../tests/test1.asm /tmp/test1.obj
+./link -o /tmp/test1.exe -org 0000 /tmp/test1.obj
+./exec /tmp/test1.exe
 ```
 
 ---
