@@ -112,7 +112,8 @@ class ExprEval
             {
                 ++pos;
                 ++pos;
-                u16 rhs = parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
+                u16 rhs =
+                    parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
 
                 if (op == '<')
                     val = (u16)(val << rhs);
@@ -122,7 +123,8 @@ class ExprEval
             else
             {
                 ++pos;
-                u16 rhs = parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
+                u16 rhs =
+                    parseFactor (e, pos, syms, pc, second, unres, resolved, externs);
 
                 if (op == '*')
                     val *= rhs;
@@ -165,7 +167,8 @@ class ExprEval
         if (e[pos] == '-')
         {
             ++pos;
-            return (u16)(-(i16)parseFactor (e, pos, syms, pc, second, unres, resolved, externs));
+            return (u16)(-(i16)parseFactor (e, pos, syms, pc, second, unres, resolved,
+                                            externs));
         }
         if (e[pos] == '+')
         {

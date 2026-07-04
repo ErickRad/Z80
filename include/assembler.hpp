@@ -18,14 +18,18 @@ class Assembler
         srcLines_.clear ();
         symTable_.clear ();
         externSyms_.clear ();
+
         obj_ = {};
         obj_.filename = filename;
+
         errors_.clear ();
         currentSeg_ = "CODE";
         pc_ = 0;
+
         ensureSeg (currentSeg_);
 
         auto lines = splitLines (src);
+
         parseAll (lines);
         pass1 (lines);
         pass2 (lines);
@@ -35,6 +39,7 @@ class Assembler
             std::string msg;
             for (auto &e : errors_)
                 msg += e + "\n";
+
             throw Z80Error (msg);
         }
         return obj_;
@@ -63,15 +68,19 @@ class Assembler
         size_t a = s.find_first_not_of (" \t\r\n");
         if (a == std::string::npos)
             return {};
+
         size_t b = s.find_last_not_of (" \t\r\n");
         return s.substr (a, b - a + 1);
     }
+
     static std::string upper (std::string s)
     {
         for (char &c : s)
             c = toupper (c);
+
         return s;
     }
+
     static std::string stripComment (const std::string &line)
     {
         bool inStr = false;
@@ -79,6 +88,7 @@ class Assembler
         {
             if (line[i] == '\'')
                 inStr = !inStr;
+
             if (!inStr && line[i] == ';')
                 return line.substr (0, i);
         }
@@ -90,6 +100,7 @@ class Assembler
         std::vector< std::string > out;
         std::istringstream ss (src);
         std::string l;
+
         while (std::getline (ss, l))
             out.push_back (l);
         return out;
@@ -125,6 +136,7 @@ class Assembler
         ParsedLine pl;
         pl.raw = raw;
         pl.lineNum = n;
+
         std::string line = trim (stripComment (raw));
         if (line.empty ())
             return pl;
@@ -132,16 +144,19 @@ class Assembler
         size_t i = 0;
         if (!line.empty () && (isalpha (line[0]) || line[0] == '_' || line[0] == '.'))
         {
+            
             size_t j = 0;
             while (j < line.size () &&
                    (isalnum (line[j]) || line[j] == '_' || line[j] == '.'))
                 ++j;
+
             if (j < line.size () && line[j] == ':')
             {
                 pl.label = line.substr (0, j);
                 i = j + 1;
                 while (i < line.size () && isspace (line[i]))
                     ++i;
+
                 line = line.substr (i);
                 i = 0;
             }
@@ -150,14 +165,16 @@ class Assembler
                 size_t k = j;
                 while (k < line.size () && isspace (line[k]))
                     ++k;
+
                 size_t kEnd = k;
                 while (kEnd < line.size () && !isspace (line[kEnd]))
                     ++kEnd;
+
                 std::string nextTok = upper (line.substr (k, kEnd - k));
                 if (nextTok == "EQU" || nextTok == "=")
                 {
                     pl.label = line.substr (0, j);
-                    line = line.substr (k);
+                    line = line.substr (k)c;
                     i = 0;
                 }
             }

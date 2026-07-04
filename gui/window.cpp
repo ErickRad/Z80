@@ -83,7 +83,7 @@ void MainWindow::buildUi ()
         "; Escreva ou carregue um programa assembly Z80 aqui\n"
         "; Macros sao expandidas automaticamente antes da montagem\n\n"
         "    ORG 0x0000\nSTART:\n    LD A, 1\n    HALT\n");
-        
+
     expandedEdit_ = new QPlainTextEdit (this);
     expandedEdit_->setFont (mono);
     expandedEdit_->setReadOnly (true);
@@ -157,7 +157,9 @@ void MainWindow::buildUi ()
     memAddrSpin_->setDisplayIntegerBase (16);
     memAddrSpin_->setPrefix ("0x");
     connect (memAddrSpin_, QOverload< int >::of (&QSpinBox::valueChanged), this,
-            [this] (int) { refreshMemoryView (); });
+             [this] (int) {
+                 refreshMemoryView ();
+             });
     memCtl->addWidget (memAddrSpin_);
     memCtl->addStretch ();
     memLayout->addLayout (memCtl);
@@ -203,8 +205,8 @@ void MainWindow::buildUi ()
     connect (btnStep, &QPushButton::clicked, this, &MainWindow::onStep);
     connect (btnStop, &QPushButton::clicked, this, &MainWindow::onStop);
     connect (btnReset, &QPushButton::clicked, this, &MainWindow::onReset);
-    connect (linkModeCombo_, QOverload< int >::of (&QComboBox::currentIndexChanged),
-            this, &MainWindow::onLinkModeChanged);
+    connect (linkModeCombo_, QOverload< int >::of (&QComboBox::currentIndexChanged), this,
+             &MainWindow::onLinkModeChanged);
 }
 
 void MainWindow::buildMenus ()
@@ -264,8 +266,9 @@ void MainWindow::appendOutput (const QString &text)
 
 void MainWindow::onOpenFile ()
 {
-    QString path = QFileDialog::getOpenFileName (this, "Abrir arquivo assembly", QString (),
-                                                  "Assembly Z80 (*.asm *.s);;Todos (*)");
+    QString path =
+        QFileDialog::getOpenFileName (this, "Abrir arquivo assembly", QString (),
+                                      "Assembly Z80 (*.asm *.s);;Todos (*)");
     if (path.isEmpty ())
         return;
 
@@ -347,8 +350,8 @@ void MainWindow::onAssemble ()
     Assembler asmObj;
     try
     {
-        std::string fname =
-            currentFilePath_.isEmpty () ? "programa.asm" : currentFilePath_.toStdString ();
+        std::string fname = currentFilePath_.isEmpty () ? "programa.asm"
+                                                        : currentFilePath_.toStdString ();
         ObjectFile obj = asmObj.assemble (expanded, fname);
 
         objPath_ = tempPath ("out.obj");
@@ -361,14 +364,13 @@ void MainWindow::onAssemble ()
                 continue;
             int row = symbolsTable_->rowCount ();
             symbolsTable_->insertRow (row);
-            symbolsTable_->setItem (row, 0, new QTableWidgetItem (
-                                               QString::fromStdString (s.name)));
-            symbolsTable_->setItem (row, 1,
-                                    new QTableWidgetItem ("0x" + hex4 (s.value)));
+            symbolsTable_->setItem (
+                row, 0, new QTableWidgetItem (QString::fromStdString (s.name)));
+            symbolsTable_->setItem (row, 1, new QTableWidgetItem ("0x" + hex4 (s.value)));
         }
 
-        appendLog (QString ("[Montador] Montagem concluida com sucesso: %1")
-                      .arg (objPath_));
+        appendLog (
+            QString ("[Montador] Montagem concluida com sucesso: %1").arg (objPath_));
         statusLabel_->setText ("Montado com sucesso (.obj gerado).");
     }
     catch (Z80Error &e)
@@ -399,10 +401,10 @@ void MainWindow::onLink ()
         LinkConfig cfg;
         cfg.loadAddr = 0x0000;
         cfg.mode = linkModeCombo_->currentIndex () == 0 ? LinkMode::Absolute
-                                                         : LinkMode::Relocatable;
+                                                        : LinkMode::Relocatable;
 
         Linker linker;
-        std::vector< ObjectFile > objs { obj };
+        std::vector< ObjectFile > objs{ obj };
         ExeFile exe = linker.link (objs, cfg);
 
         if (!linker.errors ().empty ())
@@ -419,18 +421,18 @@ void MainWindow::onLink ()
         ExeFmt::save (exe, exePath_.toStdString ());
 
         QString modeStr = cfg.mode == LinkMode::Absolute
-                             ? "Ligador-Relocador completo (Carregador Absoluto)"
-                             : "Ligador (relocacoes pendentes para o Carregador "
-                               "Relocador)";
+                              ? "Ligador-Relocador completo (Carregador Absoluto)"
+                              : "Ligador (relocacoes pendentes para o Carregador "
+                                "Relocador)";
         appendLog (QString ("[Ligador] Ligacao concluida. Modo: %1\nTamanho: %2 "
                             "bytes. Origem: 0x%3")
-                      .arg (modeStr)
-                      .arg (exe.data.size ())
-                      .arg (hex4 (exe.origin)));
+                       .arg (modeStr)
+                       .arg (exe.data.size ())
+                       .arg (hex4 (exe.origin)));
         if (!exe.relocs.empty ())
             appendLog (QString ("[Ligador] %1 relocacao(oes) pendente(s) para o "
                                 "carregador.")
-                          .arg (exe.relocs.size ()));
+                           .arg (exe.relocs.size ()));
 
         statusLabel_->setText ("Ligado com sucesso (.exe gerado).");
     }
@@ -445,8 +447,9 @@ void MainWindow::onLoad ()
 {
     if (exePath_.isEmpty () || !QFile::exists (exePath_))
     {
-        QMessageBox::information (this, "Aviso", "Ligue o programa antes de carregar "
-                                                  "(passo 3).");
+        QMessageBox::information (this, "Aviso",
+                                  "Ligue o programa antes de carregar "
+                                  "(passo 3).");
         return;
     }
 
@@ -482,8 +485,8 @@ void MainWindow::onLoad ()
             }
             appendLog (QString ("[Carregador] Carregador Relocador: %1 relocacao(oes) "
                                 "aplicada(s) em 0x%2.")
-                          .arg (exe.relocs.size ())
-                          .arg (hex4 (exe.origin)));
+                           .arg (exe.relocs.size ())
+                           .arg (hex4 (exe.origin)));
         }
 
         cpu_->reset ();
@@ -495,7 +498,9 @@ void MainWindow::onLoad ()
             if (port == 0x00)
                 appendOutput (QString (QChar ((char)val)));
         };
-        cpu_->ioRead = [] (u16) -> u8 { return 0xFF; };
+        cpu_->ioRead = [] (u16) -> u8 {
+            return 0xFF;
+        };
 
         refreshRegisters ();
         refreshFlags ();
@@ -503,8 +508,8 @@ void MainWindow::onLoad ()
         refreshStack ();
 
         appendLog (QString ("[Carregador] Programa carregado em 0x%1 (%2 bytes).")
-                      .arg (hex4 (exe.origin))
-                      .arg (exe.data.size ()));
+                       .arg (hex4 (exe.origin))
+                       .arg (exe.data.size ()));
         statusLabel_->setText ("Programa carregado. Pronto para executar.");
     }
     catch (Z80Error &e)
@@ -518,8 +523,9 @@ void MainWindow::onRun ()
 {
     if (!hasExe_)
     {
-        QMessageBox::information (this, "Aviso", "Carregue um programa antes de "
-                                                  "executar (passo 4).");
+        QMessageBox::information (this, "Aviso",
+                                  "Carregue um programa antes de "
+                                  "executar (passo 4).");
         return;
     }
     if (cpu_->regs.halted)
@@ -535,8 +541,9 @@ void MainWindow::onStep ()
 {
     if (!hasExe_)
     {
-        QMessageBox::information (this, "Aviso", "Carregue um programa antes de "
-                                                  "executar (passo 4).");
+        QMessageBox::information (this, "Aviso",
+                                  "Carregue um programa antes de "
+                                  "executar (passo 4).");
         return;
     }
     if (!cpu_->regs.halted)
@@ -606,18 +613,26 @@ void MainWindow::refreshRegisters ()
         QString value;
     };
     std::vector< RegRow > rows = {
-        { "A", hex2 (r.A) },         { "F", hex2 (r.F) },
-        { "B", hex2 (r.B) },         { "C", hex2 (r.C) },
-        { "D", hex2 (r.D) },         { "E", hex2 (r.E) },
-        { "H", hex2 (r.H) },         { "L", hex2 (r.L) },
+        { "A", hex2 (r.A) },
+        { "F", hex2 (r.F) },
+        { "B", hex2 (r.B) },
+        { "C", hex2 (r.C) },
+        { "D", hex2 (r.D) },
+        { "E", hex2 (r.E) },
+        { "H", hex2 (r.H) },
+        { "L", hex2 (r.L) },
         { "AF", hex4 ((u16)(r.A << 8 | r.F)) },
         { "BC", hex4 ((u16)(r.B << 8 | r.C)) },
         { "DE", hex4 ((u16)(r.D << 8 | r.E)) },
         { "HL", hex4 ((u16)(r.H << 8 | r.L)) },
-        { "PC", hex4 (r.PC) },       { "SP", hex4 (r.SP) },
-        { "IX", hex4 (r.IX) },       { "IY", hex4 (r.IY) },
-        { "I", hex2 (r.I) },         { "R", hex2 (r.R) },
-        { "IFF1", r.IFF1 ? "1" : "0" }, { "IFF2", r.IFF2 ? "1" : "0" },
+        { "PC", hex4 (r.PC) },
+        { "SP", hex4 (r.SP) },
+        { "IX", hex4 (r.IX) },
+        { "IY", hex4 (r.IY) },
+        { "I", hex2 (r.I) },
+        { "R", hex2 (r.R) },
+        { "IFF1", r.IFF1 ? "1" : "0" },
+        { "IFF2", r.IFF2 ? "1" : "0" },
         { "HALT", r.halted ? "SIM" : "nao" },
     };
 
