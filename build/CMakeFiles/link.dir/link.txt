@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/link.dir/src/link.cpp.o -o bin/link

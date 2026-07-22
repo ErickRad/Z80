@@ -18,19 +18,16 @@ class Assembler
         srcLines_.clear ();
         symTable_.clear ();
         externSyms_.clear ();
-
+        absSyms_.clear ();
+        segPC_.clear ();
         obj_ = {};
         obj_.filename = filename;
-
         errors_.clear ();
         currentSeg_ = "CODE";
         pc_ = 0;
-
         ensureSeg (currentSeg_);
 
         auto lines = splitLines (src);
-
-        parseAll (lines);
         pass1 (lines);
         pass2 (lines);
 
@@ -39,7 +36,6 @@ class Assembler
             std::string msg;
             for (auto &e : errors_)
                 msg += e + "\n";
-
             throw Z80Error (msg);
         }
         return obj_;
@@ -56,8 +52,10 @@ class Assembler
 
   private:
     std::vector< std::string > srcLines_;
-    std::unordered_map< std::string, u16 > symTable_;
-    std::unordered_map< std::string, bool > externSyms_;
+    std::unordered_map< std::string, u16 > symTable_;  // rotulos e constantes
+    std::unordered_map< std::string, bool > externSyms_; // declarados EXTERN
+    std::unordered_map< std::string, bool > absSyms_;    // definidos por EQU
+    std::unordered_map< std::string, u16 > segPC_;       // contador por segmento
     ObjectFile obj_;
     std::vector< std::string > errors_;
     std::string currentSeg_;
@@ -68,19 +66,30 @@ class Assembler
         size_t a = s.find_first_not_of (" \t\r\n");
         if (a == std::string::npos)
             return {};
-
         size_t b = s.find_last_not_of (" \t\r\n");
         return s.substr (a, b - a + 1);
     }
-
     static std::string upper (std::string s)
     {
         for (char &c : s)
-            c = toupper (c);
-
+            c = (char)toupper ((unsigned char)c);
         return s;
     }
-
+    // Maiusculiza preservando o conteudo entre aspas simples, para que
+    // literais de caractere como 'a' nao sejam alterados.
+    static std::string upperKeepChars (const std::string &s)
+    {
+        std::string r = s;
+        bool inStr = false;
+        for (char &c : r)
+        {
+            if (c == '\'')
+                inStr = !inStr;
+            else if (!inStr)
+                c = (char)toupper ((unsigned char)c);
+        }
+        return r;
+    }
     static std::string stripComment (const std::string &line)
     {
         bool inStr = false;
@@ -88,7 +97,6 @@ class Assembler
         {
             if (line[i] == '\'')
                 inStr = !inStr;
-
             if (!inStr && line[i] == ';')
                 return line.substr (0, i);
         }
@@ -100,7 +108,6 @@ class Assembler
         std::vector< std::string > out;
         std::istringstream ss (src);
         std::string l;
-
         while (std::getline (ss, l))
             out.push_back (l);
         return out;
@@ -126,17 +133,11 @@ class Assembler
         throw Z80Error ("Segment not found: " + name);
     }
 
-    void parseAll (const std::vector< std::string > &lines)
-    {
-        (void)lines;
-    }
-
     ParsedLine parseLine (const std::string &raw, int n)
     {
         ParsedLine pl;
         pl.raw = raw;
         pl.lineNum = n;
-
         std::string line = trim (stripComment (raw));
         if (line.empty ())
             return pl;
@@ -144,19 +145,16 @@ class Assembler
         size_t i = 0;
         if (!line.empty () && (isalpha (line[0]) || line[0] == '_' || line[0] == '.'))
         {
-            
             size_t j = 0;
             while (j < line.size () &&
                    (isalnum (line[j]) || line[j] == '_' || line[j] == '.'))
                 ++j;
-
             if (j < line.size () && line[j] == ':')
             {
                 pl.label = line.substr (0, j);
                 i = j + 1;
                 while (i < line.size () && isspace (line[i]))
                     ++i;
-
                 line = line.substr (i);
                 i = 0;
             }
@@ -165,16 +163,14 @@ class Assembler
                 size_t k = j;
                 while (k < line.size () && isspace (line[k]))
                     ++k;
-
                 size_t kEnd = k;
                 while (kEnd < line.size () && !isspace (line[kEnd]))
                     ++kEnd;
-
                 std::string nextTok = upper (line.substr (k, kEnd - k));
                 if (nextTok == "EQU" || nextTok == "=")
                 {
                     pl.label = line.substr (0, j);
-                    line = line.substr (k)c;
+                    line = line.substr (k);
                     i = 0;
                 }
             }
@@ -238,18 +234,28 @@ class Assembler
 
     void addError (int line, const std::string &msg)
     {
-        errors_.push_back ("Line " + std::to_string (line) + ": " + msg);
+        if (line <= 0) // erro do modulo inteiro, sem linha associada
+            errors_.push_back (msg);
+        else
+            errors_.push_back ("Line " + std::to_string (line) + ": " + msg);
     }
 
+    // Avalia uma expressao. Devolve em 'sym'/'addend' o simbolo contra o qual a
+    // relocacao deve ser emitida (vazio quando a expressao e absoluta) - tanto
+    // para simbolos EXTERN quanto para rotulos do proprio modulo, ja que ambos
+    // dependem do endereco final decidido pelo ligador.
     bool resolveExpr (const std::string &expr, u16 &val, bool second, int lineNum,
-                      std::string &sym, RelocType &rtype)
+                      std::string &sym, i16 &addend)
     {
+        sym.clear ();
+        addend = 0;
         try
         {
-            auto res = ExprEval::eval (expr, symTable_, pc_, second);
+            auto res =
+                ExprEval::eval (expr, symTable_, pc_, second, &externSyms_, &absSyms_);
             val = res.value;
-            sym = res.unresolved;
-            rtype = RelocType::ABS16;
+            sym = res.relocSym;
+            addend = res.relocAddend;
             return res.resolved;
         }
         catch (std::exception &e)
@@ -260,6 +266,34 @@ class Assembler
         }
     }
 
+    // Cria (ou atualiza) uma entrada de simbolo unica no arquivo objeto.
+    SymbolEntry &symEntry (const std::string &name)
+    {
+        for (auto &s : obj_.symbols)
+            if (s.name == name)
+                return s;
+
+        SymbolEntry se;
+        se.name = name;
+        se.value = 0;
+        se.defined = false;
+        se.global = false;
+        se.segment = currentSeg_;
+        obj_.symbols.push_back (se);
+        return obj_.symbols.back ();
+    }
+
+    void addReloc (const std::string &sym, RelocType type, u32 offset, i16 addend)
+    {
+        RelocEntry re;
+        re.offset = offset;
+        re.type = type;
+        re.symbol = sym;
+        re.addend = addend;
+        re.segment = currentSeg_;
+        obj_.relocs.push_back (re);
+    }
+
     void processDirective (const ParsedLine &pl, bool second)
     {
         const std::string &op = pl.op;
@@ -267,50 +301,48 @@ class Assembler
         {
             u16 val = 0;
             std::string s;
-            RelocType rt;
+            i16 ad = 0;
             resolveExpr (pl.operands.empty () ? "0" : pl.operands[0], val, second,
-                         pl.lineNum, s, rt);
-            pc_ = val;
-            if (!second)
+                         pl.lineNum, s, ad);
+
+            ObjSegment &seg = getSeg (currentSeg_);
+            if (!seg.hasOrigin && seg.data.empty () && pc_ == 0)
             {
-                ObjSegment &seg = getSeg (currentSeg_);
+                // primeiro ORG do segmento: define o endereco de carga
                 seg.hasOrigin = true;
                 seg.origin = val;
             }
+            else if (second && val > seg.origin &&
+                     (u32)(val - seg.origin) > seg.data.size ())
+            {
+                // ORG adiante no mesmo segmento: preenche o vao com zeros
+                seg.data.resize ((size_t)(val - seg.origin), 0);
+            }
+            pc_ = val;
         }
         else if (op == "SECTION" || op == "SEGMENT")
         {
             if (!pl.operands.empty ())
             {
-                currentSeg_ = pl.operands[0];
+                // cada segmento mantem seu proprio contador de posicao
+                segPC_[currentSeg_] = pc_;
+                currentSeg_ = upper (pl.operands[0]);
                 ensureSeg (currentSeg_);
+                pc_ = segPC_.count (currentSeg_) ? segPC_[currentSeg_]
+                                                 : getSeg (currentSeg_).origin;
             }
         }
         else if (op == "GLOBAL" || op == "PUBLIC")
         {
-            for (auto &sym : pl.operands)
+            for (auto &raw : pl.operands)
             {
-                if (!second)
+                std::string sym = upper (trim (raw));
+                SymbolEntry &se = symEntry (sym);
+                se.global = true;
+                if (symTable_.count (sym))
                 {
-                    SymbolEntry se;
-                    se.name = sym;
-                    se.value = 0;
-                    se.defined = false;
-                    se.global = true;
-                    se.segment = currentSeg_;
-                    obj_.symbols.push_back (se);
-                }
-                else
-                {
-                    for (auto &s : obj_.symbols)
-                    {
-                        if (s.name == sym)
-                        {
-                            s.global = true;
-                            s.value = symTable_.count (sym) ? symTable_[sym] : 0;
-                            s.defined = symTable_.count (sym) > 0;
-                        }
-                    }
+                    se.value = symTable_[sym];
+                    se.defined = true;
                 }
             }
         }
@@ -320,9 +352,12 @@ class Assembler
             {
                 u16 val = 0;
                 std::string s;
-                RelocType rt;
-                resolveExpr (pl.operands[0], val, second, pl.lineNum, s, rt);
-                symTable_[pl.label] = val;
+                i16 ad = 0;
+                resolveExpr (pl.operands[0], val, second, pl.lineNum, s, ad);
+
+                std::string name = upper (pl.label);
+                symTable_[name] = val;
+                absSyms_[name] = true; // constante: nunca e relocada
             }
         }
         else if (op == "DB" || op == "DEFB" || op == "BYTE")
@@ -333,6 +368,7 @@ class Assembler
                 std::string trimmed = trim (op_);
                 if (!trimmed.empty () && trimmed[0] == '\'')
                 {
+                    // literal de caractere ou cadeia: 'A' / 'texto'
                     for (size_t i = 1; i < trimmed.size () && trimmed[i] != '\''; ++i)
                     {
                         if (second)
@@ -344,20 +380,12 @@ class Assembler
                 {
                     u16 val = 0;
                     std::string sym_;
-                    RelocType rt;
-                    bool ok = resolveExpr (trimmed, val, second, pl.lineNum, sym_, rt);
+                    i16 ad = 0;
+                    resolveExpr (trimmed, val, second, pl.lineNum, sym_, ad);
                     if (second)
                     {
-                        if (!ok && !sym_.empty ())
-                        {
-                            RelocEntry re;
-                            re.offset = seg.data.size ();
-                            re.type = RelocType::ABS8;
-                            re.symbol = sym_;
-                            re.addend = 0;
-                            re.segment = currentSeg_;
-                            obj_.relocs.push_back (re);
-                        }
+                        if (!sym_.empty ())
+                            addReloc (sym_, RelocType::ABS8, (u32)seg.data.size (), ad);
                         seg.data.push_back ((u8)val);
                     }
                     ++pc_;
@@ -371,20 +399,12 @@ class Assembler
             {
                 u16 val = 0;
                 std::string sym_;
-                RelocType rt;
-                bool ok = resolveExpr (trim (op_), val, second, pl.lineNum, sym_, rt);
+                i16 ad = 0;
+                resolveExpr (trim (op_), val, second, pl.lineNum, sym_, ad);
                 if (second)
                 {
-                    if (!ok && !sym_.empty ())
-                    {
-                        RelocEntry re;
-                        re.offset = seg.data.size ();
-                        re.type = RelocType::ABS16;
-                        re.symbol = sym_;
-                        re.addend = 0;
-                        re.segment = currentSeg_;
-                        obj_.relocs.push_back (re);
-                    }
+                    if (!sym_.empty ())
+                        addReloc (sym_, RelocType::ABS16, (u32)seg.data.size (), ad);
                     seg.data.push_back ((u8)(val & 0xFF));
                     seg.data.push_back ((u8)(val >> 8));
                 }
@@ -395,14 +415,14 @@ class Assembler
         {
             u16 n = 0;
             std::string s;
-            RelocType rt;
+            i16 ad = 0;
             resolveExpr (pl.operands.empty () ? "0" : pl.operands[0], n, second,
-                         pl.lineNum, s, rt);
+                         pl.lineNum, s, ad);
             u8 fill = 0;
             if (pl.operands.size () > 1)
             {
                 u16 fv = 0;
-                resolveExpr (pl.operands[1], fv, second, pl.lineNum, s, rt);
+                resolveExpr (pl.operands[1], fv, second, pl.lineNum, s, ad);
                 fill = (u8)fv;
             }
             ObjSegment &seg = getSeg (currentSeg_);
@@ -413,25 +433,32 @@ class Assembler
         }
         else if (op == "EXTERN" || op == "EXTRN")
         {
-            for (auto &sym : pl.operands)
+            for (auto &raw : pl.operands)
             {
+                std::string sym = upper (trim (raw));
                 externSyms_[sym] = true;
-                SymbolEntry se;
-                se.name = sym;
-                se.value = 0;
-                se.defined = false;
+
+                SymbolEntry &se = symEntry (sym);
                 se.global = true;
+                se.defined = false;
                 se.segment = "";
-                if (!second)
-                    obj_.symbols.push_back (se);
             }
         }
     }
 
+    // Tamanho da instrucao no passo 1: codifica de verdade (sem exigir que os
+    // simbolos ja estejam resolvidos) e mede o resultado. estimateSize so e
+    // usada como rede de seguranca se a codificacao falhar.
     u16 instrSize (const ParsedLine &pl)
     {
-        auto sz = estimateSize (pl);
-        return sz;
+        try
+        {
+            return (u16)encodeInstr (pl, false).bytes.size ();
+        }
+        catch (std::exception &)
+        {
+            return estimateSize (pl);
+        }
     }
 
     u16 estimateSize (const ParsedLine &pl)
@@ -439,20 +466,19 @@ class Assembler
         const std::string &op = pl.op;
         if (op.empty ())
             return 0;
+        if (op == "RLC" || op == "RRC" || op == "RL" || op == "RR" || op == "SLA" ||
+            op == "SRA" || op == "SRL")
+        {
+            // prefixo CB; com (IX+d)/(IY+d) sao 4 bytes
+            std::string a = upper (pl.operands.empty () ? "" : pl.operands[0]);
+            if (a.substr (0, 2) == "(I")
+                return 4;
+            return 2;
+        }
         if (op == "NOP" || op == "RLCA" || op == "RRCA" || op == "RLA" || op == "RRA" ||
             op == "DAA" || op == "CPL" || op == "SCF" || op == "CCF" || op == "HALT" ||
-            op == "EXX" || op == "DI" || op == "EI" || op == "RET" || op == "RLC" ||
-            op == "RRC" || op == "RL" || op == "RR" || op == "SLA" || op == "SRA" ||
-            op == "SRL")
+            op == "EXX" || op == "DI" || op == "EI" || op == "RET")
         {
-            if (pl.operands.size () == 1)
-            {
-                const auto &a = pl.operands[0];
-                if (a == "(HL)")
-                    return 2;
-                if (a.substr (0, 2) == "(I")
-                    return 4;
-            }
             return 1;
         }
         if (op == "LD")
@@ -578,10 +604,13 @@ class Assembler
                 return 1;
             return 2;
         }
+        if (a.substr (0, 3) == "(IX" || a.substr (0, 3) == "(IY")
+        {
+            // LD (IX+d),r = 3 bytes; LD (IX+d),n = 4 bytes
+            return RegCode::isR8 (b) ? 3 : 4;
+        }
         if (a[0] == '(')
         {
-            if (b == "HL" || b == "BC" || b == "DE" || b == "SP")
-                return 3;
             if (b == "IX" || b == "IY")
                 return 4;
             return 3;
@@ -592,10 +621,10 @@ class Assembler
         {
             if (b.substr (0, 3) == "(IX" || b.substr (0, 3) == "(IY")
                 return 3;
-            return 1;
+            if (b == "(BC)" || b == "(DE)")
+                return 1;
+            return 3; // LD A,(nn)
         }
-        if (a[0] == '(' && (a.substr (1, 2) == "IX" || a.substr (1, 2) == "IY"))
-            return 3;
         if (RegCode::isR8 (a))
             return 2;
         return 2;
@@ -606,6 +635,18 @@ class Assembler
         size_t opIdx = (pl.op == "ADD" || pl.op == "ADC" || pl.op == "SBC") ? 1 : 0;
         if (pl.operands.size () <= opIdx)
             return 1;
+
+        // aritmetica de 16 bits: ADD HL,rr = 1 byte; ADD IX/IY,rr e
+        // ADC/SBC HL,rr usam prefixo (2 bytes)
+        if (opIdx == 1)
+        {
+            std::string dst = upper (pl.operands[0]);
+            if (dst == "HL")
+                return pl.op == "ADD" ? 1 : 2;
+            if (dst == "IX" || dst == "IY")
+                return 2;
+        }
+
         std::string a = upper (pl.operands[opIdx]);
         if (a == "HL" || a == "IX" || a == "IY")
             return 2;
@@ -653,49 +694,54 @@ class Assembler
         return 2;
     }
 
+    // PASSO 1: percorre o fonte calculando o tamanho de cada instrucao e
+    // montando a tabela de simbolos. O tamanho vem da propria codificacao
+    // (encodeInstr em modo "primeiro passo"), e nao de uma tabela paralela de
+    // tamanhos - assim os dois passos nunca podem divergir.
     void pass1 (const std::vector< std::string > &lines)
     {
         currentSeg_ = "CODE";
         pc_ = 0;
         ensureSeg (currentSeg_);
+
         for (int i = 0; i < (int)lines.size (); ++i)
         {
             auto pl = parseLine (lines[i], i + 1);
+
             if (!pl.label.empty () && pl.op != "EQU" && pl.op != "=")
             {
-                symTable_[pl.label] = pc_;
-                SymbolEntry se;
-                se.name = pl.label;
+                std::string name = upper (pl.label);
+
+                if (symTable_.count (name))
+                    addError (pl.lineNum, "Simbolo redefinido: " + name);
+
+                symTable_[name] = pc_;
+
+                SymbolEntry &se = symEntry (name);
                 se.value = pc_;
                 se.defined = true;
-                se.global = false;
                 se.segment = currentSeg_;
-                bool found = false;
-                for (auto &s : obj_.symbols)
-                    if (s.name == pl.label)
-                    {
-                        s.value = pc_;
-                        s.defined = true;
-                        s.segment = currentSeg_;
-                        found = true;
-                    }
-                if (!found)
-                    obj_.symbols.push_back (se);
             }
+
             if (isDirective (pl.op))
             {
                 processDirective (pl, false);
                 continue;
             }
+
             if (!pl.op.empty ())
                 pc_ += instrSize (pl);
         }
     }
 
+    // PASSO 2: gera o codigo objeto byte a byte, agora com todos os simbolos
+    // conhecidos, e emite as entradas de relocacao.
     void pass2 (const std::vector< std::string > &lines)
     {
         currentSeg_ = "CODE";
         pc_ = 0;
+        segPC_.clear ();
+
         for (int i = 0; i < (int)lines.size (); ++i)
         {
             auto pl = parseLine (lines[i], i + 1);
@@ -708,7 +754,7 @@ class Assembler
                 continue;
             try
             {
-                auto enc = encodeInstr (pl);
+                auto enc = encodeInstr (pl, true);
                 ObjSegment &seg = getSeg (currentSeg_);
                 for (auto &re : enc.relocs_)
                 {
@@ -725,12 +771,17 @@ class Assembler
                 pc_ += instrSize (pl);
             }
         }
+
         for (auto &sym : obj_.symbols)
         {
-            if (sym.global && symTable_.count (sym.name))
+            if (symTable_.count (sym.name))
             {
                 sym.value = symTable_[sym.name];
                 sym.defined = true;
+            }
+            else if (sym.global && !externSyms_.count (sym.name))
+            {
+                addError (0, "Simbolo GLOBAL nunca definido: " + sym.name);
             }
         }
     }
@@ -754,13 +805,13 @@ class Assembler
         std::vector< RelocEntry > relocs_;
     };
 
-    EncOut encodeInstr (const ParsedLine &pl)
+    EncOut encodeInstr (const ParsedLine &pl, bool second)
     {
         EncOut out;
         const std::string &op = pl.op;
         auto ops = pl.operands;
         for (auto &o : ops)
-            o = trim (upper (o));
+            o = trim (upperKeepChars (o));
 
         auto emit = [&] (std::initializer_list< u8 > bs) {
             for (u8 b : bs)
@@ -769,18 +820,16 @@ class Assembler
         auto o0 = ops.size () > 0 ? ops[0] : "";
         auto o1 = ops.size () > 1 ? ops[1] : "";
 
-        auto evalU16 = [&] (const std::string &e, std::string &sym,
-                            RelocType &rt) -> u16 {
+        auto evalU16 = [&] (const std::string &e, std::string &sym, i16 &addend) -> u16 {
             u16 val = 0;
-            bool ok = resolveExpr (e, val, true, pl.lineNum, sym, rt);
-            (void)ok;
+            resolveExpr (e, val, second, pl.lineNum, sym, addend);
             return val;
         };
         auto evalU8 = [&] (const std::string &e) -> u8 {
             u16 val = 0;
             std::string s;
-            RelocType rt;
-            resolveExpr (e, val, true, pl.lineNum, s, rt);
+            i16 ad = 0;
+            resolveExpr (e, val, second, pl.lineNum, s, ad);
             return (u8)val;
         };
         auto addReloc16 = [&] (const std::string &sym, size_t prefixLen = 0,
@@ -1100,9 +1149,9 @@ class Assembler
                     return out;
                 }
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 addr = evalU16 (o1.substr (1, o1.size () - 2), sym2, rt);
-                addReloc16 (sym2, 1, (i16)addr);
+                addReloc16 (sym2, 1, rt);
                 emit ({ 0x3A, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
@@ -1134,20 +1183,20 @@ class Assembler
             if (o0[0] == '(' && o1 == "A")
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 addr = evalU16 (o0.substr (1, o0.size () - 2), sym2, rt);
-                addReloc16 (sym2, 1, (i16)addr);
+                addReloc16 (sym2, 1, rt);
                 emit ({ 0x32, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
             if (o0[0] == '(' && (o1 == "HL" || o1 == "BC" || o1 == "DE" || o1 == "SP"))
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 addr = evalU16 (o0.substr (1, o0.size () - 2), sym2, rt);
                 u8 opc = o1 == "HL" ? 0x22 : o1 == "BC" ? 0x43 : o1 == "DE" ? 0x53 : 0x73;
                 u8 pfx = (o1 == "BC" || o1 == "DE" || o1 == "SP") ? 0xED : 0;
-                addReloc16 (sym2, pfx ? 2 : 1, (i16)addr);
+                addReloc16 (sym2, pfx ? 2 : 1, rt);
                 if (pfx)
                     emit ({ pfx, opc, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 else
@@ -1158,20 +1207,20 @@ class Assembler
             {
                 u8 pfx = o1 == "IX" ? 0xDD : 0xFD;
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 addr = evalU16 (o0.substr (1, o0.size () - 2), sym2, rt);
-                addReloc16 (sym2, 2, (i16)addr);
+                addReloc16 (sym2, 2, rt);
                 emit ({ pfx, 0x22, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
             if ((o0 == "HL" || o0 == "BC" || o0 == "DE" || o0 == "SP") && o1[0] == '(')
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 addr = evalU16 (o1.substr (1, o1.size () - 2), sym2, rt);
                 u8 opc = o0 == "HL" ? 0x2A : o0 == "BC" ? 0x4B : o0 == "DE" ? 0x5B : 0x7B;
                 u8 pfx = (o0 == "BC" || o0 == "DE" || o0 == "SP") ? 0xED : 0;
-                addReloc16 (sym2, pfx ? 2 : 1, (i16)addr);
+                addReloc16 (sym2, pfx ? 2 : 1, rt);
                 if (pfx)
                     emit ({ pfx, opc, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 else
@@ -1182,9 +1231,9 @@ class Assembler
             {
                 u8 pfx = o0 == "IX" ? 0xDD : 0xFD;
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 addr = evalU16 (o1.substr (1, o1.size () - 2), sym2, rt);
-                addReloc16 (sym2, 2, (i16)addr);
+                addReloc16 (sym2, 2, rt);
                 emit ({ pfx, 0x2A, (u8)(addr & 0xFF), (u8)(addr >> 8) });
                 return out;
             }
@@ -1192,27 +1241,27 @@ class Assembler
             {
                 int rpi = RegCode::rp (o0);
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 v = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2, 1, (i16)v);
+                addReloc16 (sym2, 1, rt);
                 emit ({ (u8)(0x01 | (u8)rpi << 4), (u8)(v & 0xFF), (u8)(v >> 8) });
                 return out;
             }
             if (o0 == "IX")
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 v = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2, 2, (i16)v);
+                addReloc16 (sym2, 2, rt);
                 emit ({ 0xDD, 0x21, (u8)(v & 0xFF), (u8)(v >> 8) });
                 return out;
             }
             if (o0 == "IY")
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 v = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2, 2, (i16)v);
+                addReloc16 (sym2, 2, rt);
                 emit ({ 0xFD, 0x21, (u8)(v & 0xFF), (u8)(v >> 8) });
                 return out;
             }
@@ -1391,16 +1440,16 @@ class Assembler
             if (ops.size () == 2 && cc.count (o0))
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 a = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2, 1, (i16)a);
+                addReloc16 (sym2, 1, rt);
                 emit ({ (u8)(0xC2 | (cc[o0] << 3)), (u8)(a & 0xFF), (u8)(a >> 8) });
                 return out;
             }
             std::string sym2;
-            RelocType rt;
+            i16 rt = 0;
             u16 a = evalU16 (o0, sym2, rt);
-            addReloc16 (sym2, 1, (i16)a);
+            addReloc16 (sym2, 1, rt);
             emit ({ 0xC3, (u8)(a & 0xFF), (u8)(a >> 8) });
             return out;
         }
@@ -1413,22 +1462,22 @@ class Assembler
             if (ops.size () == 2 && cc.count (o0))
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 tgt = 0;
-                resolveExpr (o1, tgt, true, pl.lineNum, sym2, rt);
+                bool ok = resolveExpr (o1, tgt, second, pl.lineNum, sym2, rt);
                 i8 d = (i8)((i16)tgt - (i16)(pc_ + 2));
-                if (!sym2.empty ())
-                    addRelocRel (sym2, 1, (i16)tgt);
+                if (!ok && !sym2.empty ())
+                    addRelocRel (sym2, 1, rt);
                 emit ({ cc[o0], (u8)d });
                 return out;
             }
             std::string sym2;
-            RelocType rt;
+            i16 rt = 0;
             u16 tgt = 0;
-            resolveExpr (o0, tgt, true, pl.lineNum, sym2, rt);
+            bool ok = resolveExpr (o0, tgt, second, pl.lineNum, sym2, rt);
             i8 d = (i8)((i16)tgt - (i16)(pc_ + 2));
-            if (!sym2.empty ())
-                addRelocRel (sym2, 1, (i16)tgt);
+            if (!ok && !sym2.empty ())
+                addRelocRel (sym2, 1, rt);
             emit ({ 0x18, (u8)d });
             return out;
         }
@@ -1436,12 +1485,12 @@ class Assembler
         if (op == "DJNZ")
         {
             std::string sym2;
-            RelocType rt;
+            i16 rt = 0;
             u16 tgt = 0;
-            resolveExpr (o0, tgt, true, pl.lineNum, sym2, rt);
+            bool ok = resolveExpr (o0, tgt, second, pl.lineNum, sym2, rt);
             i8 d = (i8)((i16)tgt - (i16)(pc_ + 2));
-            if (!sym2.empty ())
-                addRelocRel (sym2, 1, (i16)tgt);
+            if (!ok && !sym2.empty ())
+                addRelocRel (sym2, 1, rt);
             emit ({ 0x10, (u8)d });
             return out;
         }
@@ -1455,16 +1504,16 @@ class Assembler
             if (ops.size () == 2 && cc.count (o0))
             {
                 std::string sym2;
-                RelocType rt;
+                i16 rt = 0;
                 u16 a = evalU16 (o1, sym2, rt);
-                addReloc16 (sym2, 1, (i16)a);
+                addReloc16 (sym2, 1, rt);
                 emit ({ (u8)(0xC4 | (cc[o0] << 3)), (u8)(a & 0xFF), (u8)(a >> 8) });
                 return out;
             }
             std::string sym2;
-            RelocType rt;
+            i16 rt = 0;
             u16 a = evalU16 (o0, sym2, rt);
-            addReloc16 (sym2, 1, (i16)a);
+            addReloc16 (sym2, 1, rt);
             emit ({ 0xCD, (u8)(a & 0xFF), (u8)(a >> 8) });
             return out;
         }
@@ -1562,8 +1611,8 @@ class Assembler
                 {
                     u16 bv = 0;
                     std::string ss;
-                    RelocType rt;
-                    resolveExpr (o0, bv, true, pl.lineNum, ss, rt);
+                    i16 rt = 0;
+                    resolveExpr (o0, bv, second, pl.lineNum, ss, rt);
                     bit_ = (u8)(bv & 7);
                 }
                 r.bytes = { 0xDD, 0xCB, (u8)d, (u8)(base | (u8)bit_ << 3 | 6) };
@@ -1585,8 +1634,8 @@ class Assembler
                 {
                     u16 bv = 0;
                     std::string ss;
-                    RelocType rt;
-                    resolveExpr (o0, bv, true, pl.lineNum, ss, rt);
+                    i16 rt = 0;
+                    resolveExpr (o0, bv, second, pl.lineNum, ss, rt);
                     bit_ = (u8)(bv & 7);
                 }
                 r.bytes = { 0xFD, 0xCB, (u8)d, (u8)(base | (u8)bit_ << 3 | 6) };
@@ -1597,8 +1646,8 @@ class Assembler
             {
                 u16 bv = 0;
                 std::string ss;
-                RelocType rt;
-                resolveExpr (o0, bv, true, pl.lineNum, ss, rt);
+                i16 rt = 0;
+                resolveExpr (o0, bv, second, pl.lineNum, ss, rt);
                 bit_ = (u8)(bv & 7);
             }
             r.bytes = { 0xCB, (u8)(base | (u8)bit_ << 3 | (u8)ri) };

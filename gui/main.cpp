@@ -9,7 +9,7 @@ int main (int argc, char *argv[])
     QApplication::setOrganizationName ("UFPel");
 
     MainWindow window;
-    window.show ();
+    window.show();
 
-    return app.exec ();
+    return app.exec();
 }

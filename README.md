@@ -123,18 +123,31 @@ integrador do montador (`asm`) antes da montagem propriamente dita, não
 ### Sintaxe
 
 ```asm
-NOME_DA_MACRO MACRO par1, par2, ...
+MACRO NOME_DA_MACRO par1, par2, ...
     ; corpo da macro - pode referenciar par1, par2...
     ; pode conter outra definicao MACRO...ENDM (macro aninhada)
     ; pode chamar outras macros (chamada aninhada)
 ENDM
 ```
 
+As três formas abaixo são equivalentes e todas são aceitas:
+
+```asm
+MACRO NOME par1, par2      ; palavra-chave primeiro
+NOME MACRO par1, par2      ; nome primeiro (estilo clássico)
+NOME: MACRO par1, par2     ; nome como rótulo
+```
+
+Uma macro definida dentro de outra só passa a existir **quando a macro externa
+é expandida** — e já com os parâmetros da externa substituídos no seu corpo.
+Uma macro que chama a si mesma é interrompida com erro após 64 níveis, em vez
+de travar o programa.
+
 ### Exemplo — macros aninhadas (definição e chamada)
 
 ```asm
-OUTER MACRO val
-    INNER MACRO x
+MACRO OUTER val
+    MACRO INNER x
         LD A, x
         ADD A, val
     ENDM
@@ -183,13 +196,38 @@ integrador" mencionado no enunciado: o ponto único que ativa o
 processamento de macros antes de qualquer outra etapa.
 
 ### Passo 1 (pass1)
-Calcula o tamanho de cada instrução e resolve a tabela de símbolos locais
-(rótulos), sem ainda gerar código objeto.
+Percorre o fonte calculando o endereço de cada linha e montando a tabela de
+símbolos (rótulos e constantes `EQU`), sem ainda gerar código objeto.
+
+O tamanho de cada instrução é obtido **codificando a própria instrução** em
+modo "primeiro passo" (símbolos ainda desconhecidos valem zero) e medindo o
+resultado, em vez de consultar uma tabela paralela de tamanhos. Assim é
+impossível o passo 1 discordar do passo 2 e deslocar todos os rótulos
+seguintes.
 
 ### Passo 2 (pass2)
-Gera o código de máquina byte a byte. Símbolos ainda não resolvíveis
-localmente (declarados com `EXTERN`) geram entradas de **relocação**
-(`RelocEntry`) em vez de erro, para que o ligador as resolva depois.
+Gera o código de máquina byte a byte, agora com todos os símbolos conhecidos,
+e emite as entradas de **relocação** (`RelocEntry`).
+
+Recebe entrada de relocação **toda referência a endereço**, e não apenas os
+símbolos `EXTERN`: um `JP LOOP` para um rótulo do próprio módulo também
+depende de onde o ligador vai colocar o módulo. O avaliador de expressões
+distingue o que é endereço do que é constante:
+
+| Expressão    | Relocável? | Motivo                                  |
+|--------------|------------|-----------------------------------------|
+| `LOOP`       | sim        | endereço                                 |
+| `TABELA+4`   | sim        | endereço + deslocamento                  |
+| `FIM-INICIO` | não        | diferença entre endereços = um tamanho   |
+| `MAX` (EQU)  | não        | constante simbólica                      |
+
+Saltos relativos (`JR`, `DJNZ`) para rótulos do próprio segmento não geram
+relocação: o deslocamento é relativo ao PC e continua válido quando o módulo
+muda de lugar.
+
+Símbolos não distinguem maiúsculas de minúsculas (`inicio` e `INICIO` são o
+mesmo símbolo), mas literais de caractere são preservados (`LD A,'a'` carrega
+`'a'`, não `'A'`).
 
 ### Diretivas suportadas
 
@@ -221,10 +259,20 @@ erro, a lista de mensagens de erro com o número da linha correspondente.
 Implementado em **dois passos**, conforme exigido:
 
 - **Passo 1**: percorre todos os módulos objeto, calcula o endereço-base de
-  cada segmento (respeitando diretivas `ORG`) e constrói a tabela global de
-  símbolos, verificando duplicatas e símbolos externos não resolvidos.
+  cada segmento e constrói a tabela global de símbolos, verificando duplicatas
+  e símbolos externos não resolvidos.
 - **Passo 2**: copia o conteúdo de cada segmento para o buffer final do
-  executável e processa cada relocação pendente.
+  executável e processa cada relocação pendente, usando a alocação já
+  decidida no passo 1.
+
+Só entram na tabela global os símbolos exportados com `GLOBAL`/`PUBLIC`.
+Rótulos locais pertencem ao seu módulo, de modo que dois módulos podem ter um
+`LOOP:` cada sem conflito — na resolução de uma relocação, o símbolo do
+próprio módulo tem precedência sobre a tabela global.
+
+O `ORG` do fonte é o endereço que o **montador** assumiu como referência. Se
+`-org` for informado na linha de comando, ele tem precedência e o módulo é
+relocado para lá; sem `-org`, o `ORG` do módulo é respeitado.
 
 O ligador suporta **dois modos de operação**, selecionáveis por linha de
 comando, correspondendo exatamente à distinção pedida no enunciado entre
@@ -315,7 +363,7 @@ A saída em vídeo dos programas de teste é feita via a porta de I/O `0x00`
 
 ---
 
-## 7. Interface Gráfica (`vm-gui`)
+## 7. Interface Gráfica (`gui`)
 
 A GUI Qt5 integra o pipeline completo em uma única janela:
 
@@ -343,7 +391,7 @@ A GUI Qt5 integra o pipeline completo em uma única janela:
 ### Execução
 
 ```bash
-./build/bin/vm-gui
+./build/bin/gui
 ```
 
 ---
@@ -360,7 +408,7 @@ Z80/
 |   |-- expr.hpp             (avaliador de expressoes do montador)
 |   |-- encoding.hpp         (tabelas de codificacao de registradores/modos)
 |   |-- assembler.hpp        (montador de dois passos)
-|   |-- mainwindow.hpp       (janela principal - declaração)
+|   |-- window.hpp           (janela principal - declaração)
 |   |-- objfmt.hpp           (serializacao do formato .obj)
 |   |-- linker.hpp           (ligador de dois passos + formato .exe)
 |   `-- cpu.hpp              (CPU Z80 emulada - executor)
@@ -371,13 +419,17 @@ Z80/
 |   `-- exec.cpp             (CLI do executor: exec)
 |-- gui/
 |   |-- main.cpp             (ponto de entrada da aplicacao Qt5)
-|   `-- mainwindow.cpp       (janela principal - implementacao)
-`-- tests/                   (programas .asm de exemplo/teste)
-    |-- test1.asm                  (macros aninhadas, loop, flags)
-    |-- test2_ix.asm               (enderecamento indexado IX, pilha)
-    |-- test_nested_macro.asm      (macro definida e chamada dentro de outra)
-    |-- mod_a.asm                  (modulo com EXTERN/CALL)
-    `-- mod_b.asm                  (modulo com GLOBAL - ligacao multi-modulo)
+|   `-- window.cpp           (janela principal - implementacao)
+`-- tests/                   (programas .asm de exemplo, verificados)
+    |-- hello_io.asm               (saida via porta de I/O 0)
+    |-- ix_indexed.asm             (enderecamento indexado IX + DB)
+    |-- branch.asm                 (CP + salto condicional JP Z)
+    |-- stack.asm                  (PUSH/POP entre pares de 16 bits)
+    |-- string_loop.asm            (laco DJNZ + EQU com diferenca de rotulos)
+    |-- macro_nested.asm           (macro dentro de macro)
+    |-- mod_main.asm               (modulo principal, usa EXTERN)
+    |-- mod_lib.asm                (modulo biblioteca, exporta com GLOBAL)
+    `-- run_tests.sh               (bateria de regressao da toolchain)
 ```
 
 ---
@@ -411,28 +463,56 @@ exec programa.exe --load-addr 1000     # Carregador Relocador reposiciona o prog
 
 ---
 
-## 10. Testes incluídos
+## 10. Programas de exemplo (`tests/`)
 
-Os arquivos em `tests/` demonstram, na prática, os requisitos centrais do
-trabalho:
+A pasta `tests/` traz programas `.asm` curtos e **verificados** que exercitam o
+núcleo da toolchain (montagem em dois passos, ligação absoluta e execução na CPU
+emulada). Cada arquivo traz, no próprio cabeçalho, os comandos de build e a saída
+esperada.
 
-- `test1.asm` — uma macro chama outra macro (`PRINT_AB` chama `PRINT_CHAR`
-  duas vezes), validando chamadas aninhadas em uma só passagem.
-- `test_nested_macro.asm` — uma macro (`OUTER`) **define** outra macro
-  (`INNER`) em seu próprio corpo e a chama múltiplas vezes com parâmetros
-  diferentes, validando definição aninhada de macros.
-- `mod_a.asm` / `mod_b.asm` — dois módulos ligados com símbolos `GLOBAL` /
-  `EXTERN`, exercitando a resolução de relocação `CALL` entre módulos.
-- `test2_ix.asm` — endereçamento indexado (`IX+d`), operações de pilha
-  (`PUSH`/`POP`) e troca de registradores de 16 bits.
+| Programa          | Demonstra                                   | Saída |
+|--------------------|---------------------------------------------|-------|
+| `hello_io.asm`     | saída de caractere pela porta de I/O 0       | `Hi!` |
+| `ix_indexed.asm`   | endereçamento indexado `(IX+d)` sobre `DB`   | `IX!` |
+| `branch.asm`       | `CP` + salto condicional `JP Z`              | `Y`   |
+| `stack.asm`        | `PUSH`/`POP` entre pares de 16 bits          | `HI`  |
+| `string_loop.asm`  | laço `DJNZ` + `EQU` com diferença de rótulos | `Z80!` |
+| `macro_nested.asm` | macro dentro de macro (definição e chamada)  | `OK!!` |
+| `mod_main.asm` + `mod_lib.asm` | `EXTERN`/`GLOBAL`, dois módulos  | `Z80 ligado!` (2x) |
 
-Para rodar manualmente qualquer teste:
+Para montar, ligar e executar qualquer um deles (a partir de `build/bin/`):
 
 ```bash
-cd build/bin
-./asm ../../tests/test1.asm /tmp/test1.obj
-./link -o /tmp/test1.exe -org 0000 /tmp/test1.obj
-./exec /tmp/test1.exe
+./asm  ../../tests/hello_io.asm /tmp/hello_io.obj
+./link -abs -o /tmp/hello_io.exe -org 0000 /tmp/hello_io.obj
+./exec /tmp/hello_io.exe
+```
+
+### Bateria de regressão
+
+`tests/run_tests.sh` monta, liga e executa todos os exemplos e compara a saída
+com o resultado esperado — inclusive ligando o par de módulos em três
+endereços de carga diferentes e recarregando o executável relocável em outros
+três:
+
+```bash
+./tests/run_tests.sh build/bin
+```
+
+```
+Programas de um modulo:
+  ok   hello_io         Hi!
+  ...
+Ligacao de dois modulos (EXTERN/GLOBAL):
+  ok   abs@0000         Z80 ligado!|Z80 ligado!
+  ok   abs@8000         Z80 ligado!|Z80 ligado!
+  ok   abs@C000         Z80 ligado!|Z80 ligado!
+Ligador relocavel + Carregador Relocador:
+  ok   carga@0100       Z80 ligado!|Z80 ligado!
+  ok   carga@4000       Z80 ligado!|Z80 ligado!
+  ok   carga@C000       Z80 ligado!|Z80 ligado!
+
+12 passaram, 0 falharam
 ```
 
 ---

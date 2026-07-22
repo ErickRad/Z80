@@ -1,2 +1,0 @@
-# Hashes of file build rules.
-5a7f1b3f9c89402253a6b164cebd7a3a gui_autogen/timestamp

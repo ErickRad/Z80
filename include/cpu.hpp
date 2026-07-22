@@ -386,6 +386,13 @@ class Z80CPU
         return v;
     }
 
+    // Nas instrucoes IN r,(C) / OUT (C),r o endereco de porta e o par BC
+    // completo, com B na parte alta.
+    u16 bcPort () const
+    {
+        return (u16)(regs.B << 8 | regs.C);
+    }
+
     bool condCC (int cc) const
     {
         switch (cc)
@@ -481,53 +488,53 @@ class Z80CPU
         switch (op)
         {
         case 0x40:
-            regs.B = ioRead (regs.C);
+            regs.B = ioRead (bcPort ());
             setF (regs.B & 0x80, regs.B == 0, false, parity (regs.B), false, cf ());
             break;
         case 0x48:
-            regs.C = ioRead (regs.C);
+            regs.C = ioRead (bcPort ());
             setF (regs.C & 0x80, regs.C == 0, false, parity (regs.C), false, cf ());
             break;
         case 0x50:
-            regs.D = ioRead (regs.C);
+            regs.D = ioRead (bcPort ());
             setF (regs.D & 0x80, regs.D == 0, false, parity (regs.D), false, cf ());
             break;
         case 0x58:
-            regs.E = ioRead (regs.C);
+            regs.E = ioRead (bcPort ());
             setF (regs.E & 0x80, regs.E == 0, false, parity (regs.E), false, cf ());
             break;
         case 0x60:
-            regs.H = ioRead (regs.C);
+            regs.H = ioRead (bcPort ());
             setF (regs.H & 0x80, regs.H == 0, false, parity (regs.H), false, cf ());
             break;
         case 0x68:
-            regs.L = ioRead (regs.C);
+            regs.L = ioRead (bcPort ());
             setF (regs.L & 0x80, regs.L == 0, false, parity (regs.L), false, cf ());
             break;
         case 0x78:
-            regs.A = ioRead (regs.C);
+            regs.A = ioRead (bcPort ());
             setF (regs.A & 0x80, regs.A == 0, false, parity (regs.A), false, cf ());
             break;
         case 0x41:
-            ioWrite (regs.C, regs.B);
+            ioWrite (bcPort (), regs.B);
             break;
         case 0x49:
-            ioWrite (regs.C, regs.C);
+            ioWrite (bcPort (), regs.C);
             break;
         case 0x51:
-            ioWrite (regs.C, regs.D);
+            ioWrite (bcPort (), regs.D);
             break;
         case 0x59:
-            ioWrite (regs.C, regs.E);
+            ioWrite (bcPort (), regs.E);
             break;
         case 0x61:
-            ioWrite (regs.C, regs.H);
+            ioWrite (bcPort (), regs.H);
             break;
         case 0x69:
-            ioWrite (regs.C, regs.L);
+            ioWrite (bcPort (), regs.L);
             break;
         case 0x79:
-            ioWrite (regs.C, regs.A);
+            ioWrite (bcPort (), regs.A);
             break;
         case 0x43: {
             u16 nn = fetch16 ();
@@ -1191,10 +1198,16 @@ class Z80CPU
                     }
                     else if (y == 2)
                     {
+                        // 0x10 DJNZ d: decrementa B e salta se B != 0
                         i8 d = fetchS ();
-                        if (cf ())
+                        --regs.B;
+                        if (regs.B != 0)
+                        {
                             regs.PC = (u16)(regs.PC + d);
-                        cycles += 12;
+                            cycles += 13;
+                        }
+                        else
+                            cycles += 8;
                     }
                     else if (y == 3)
                     {
@@ -1213,13 +1226,15 @@ class Z80CPU
                 case 1:
                     if (q == 0)
                     {
+                        // 0x01/11/21/31 LD rr,nn
                         setReg16 (p, fetch16 ());
                         cycles += 10;
                     }
                     else
                     {
-                        regs.SP = getReg16 (2);
-                        cycles += 6;
+                        // 0x09/19/29/39 ADD HL,rr
+                        doADDHL (getReg16 (p));
+                        cycles += 11;
                     }
                     break;
                 case 2:
@@ -1320,24 +1335,8 @@ class Z80CPU
                     }
                     break;
                 }
-                case 7:
-                    switch (y)
-                    {
-                    case 0:
-                        doADDHL (getReg16 (0));
-                        break;
-                    case 1:
-                        doADDHL (getReg16 (1));
-                        break;
-                    case 2:
-                        doADDHL (getReg16 (2));
-                        break;
-                    case 3:
-                        doADDHL (regs.SP);
-                        break;
-                    }
-                    cycles += 11;
-                    break;
+                    // z == 7 (RLCA/RRCA/RLA/RRA/DAA/CPL/SCF/CCF) e tratado nos
+                    // casos explicitos do switch principal
                 }
             }
             else if (x == 3)
@@ -1345,50 +1344,15 @@ class Z80CPU
                 switch (z)
                 {
                 case 0:
-                    if (y < 4)
+                    // 0xC0..0xF8: RET cc para as oito condicoes
+                    // (NZ, Z, NC, C, PO, PE, P, M)
+                    if (condCC (y))
                     {
-                        if (condCC (y))
-                        {
-                            regs.PC = pop16 ();
-                            cycles += 11;
-                        }
-                        else
-                            cycles += 5;
-                    }
-                    else if (y == 4)
-                    {
-                        i8 d = fetchS ();
-                        if (!zf ())
-                            regs.PC = (u16)(regs.PC + d);
-                        cycles += 12;
-                    }
-                    else if (y == 5)
-                    {
-                        i8 d = fetchS ();
-                        if (!cf ())
-                            regs.PC = (u16)(regs.PC + d);
-                        cycles += 12;
-                    }
-                    else if (y == 6)
-                    {
-                        fetch8 ();
-                        cycles += 7;
+                        regs.PC = pop16 ();
+                        cycles += 11;
                     }
                     else
-                    {
-                        regs.B--;
-                        if (regs.B)
-                        {
-                            i8 d = fetchS ();
-                            regs.PC = (u16)(regs.PC + d);
-                            cycles += 13;
-                        }
-                        else
-                        {
-                            fetch8 ();
-                            cycles += 8;
-                        }
-                    }
+                        cycles += 5;
                     break;
                 case 1:
                     if (q == 0)
@@ -1500,16 +1464,20 @@ class Z80CPU
                     {
                         if (p == 0)
                         {
+                            // 0xCD CALL nn: o endereco de retorno so pode ser
+                            // empilhado DEPOIS de consumir os dois bytes do
+                            // operando, senao o RET volta para dentro deles
+                            u16 nn = fetch16 ();
                             push16 (regs.PC);
-                            regs.PC = fetch16 ();
+                            regs.PC = nn;
                             cycles += 17;
                         }
                         else if (p == 1)
-                            executeED ();
+                            executeDDFD (false); // 0xDD
                         else if (p == 2)
-                            executeDDFD (false);
+                            executeED (); // 0xED
                         else
-                            executeDDFD (true);
+                            executeDDFD (true); // 0xFD
                     }
                     break;
                 case 6: {

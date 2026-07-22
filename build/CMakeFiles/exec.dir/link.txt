@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/exec.dir/src/exec.cpp.o -o bin/exec

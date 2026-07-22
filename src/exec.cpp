@@ -8,13 +8,13 @@
 static void printRegs (const Z80CPU &cpu)
 {
     auto &r = cpu.regs;
-    std::cout << std::hex << std::setfill ('0') << "AF=" << std::setw (2) << (int)r.A
-              << std::setw (2) << (int)r.F << " BC=" << std::setw (2) << (int)r.B
-              << std::setw (2) << (int)r.C << " DE=" << std::setw (2) << (int)r.D
-              << std::setw (2) << (int)r.E << " HL=" << std::setw (2) << (int)r.H
-              << std::setw (2) << (int)r.L << " IX=" << std::setw (4) << r.IX
-              << " IY=" << std::setw (4) << r.IY << " SP=" << std::setw (4) << r.SP
-              << " PC=" << std::setw (4) << r.PC << std::dec << "\n";
+    std::cout << std::hex << std::setfill ('0') << "AF=" << std::setw (2)
+              << (int)r.A << std::setw (2) << (int)r.F << " BC=" << std::setw (2)
+              << (int)r.B << std::setw (2) << (int)r.C << " DE=" << std::setw (2)
+              << (int)r.D << std::setw (2) << (int)r.E << " HL=" << std::setw (2)
+              << (int)r.H << std::setw (2) << (int)r.L << " IX=" << std::setw (4)
+              << r.IX << " IY=" << std::setw (4) << r.IY << " SP=" << std::setw (4)
+              << r.SP << " PC=" << std::setw (4) << r.PC << std::dec << "\n";
 }
 
 static void applyPendingRelocations (ExeFile &exe, u16 loadAddr)
@@ -40,7 +40,8 @@ static void applyPendingRelocations (ExeFile &exe, u16 loadAddr)
         }
         else if (r.type == RelocType::REL8)
         {
-            u16 pc = (u16)(loadAddr + r.offset + 2);
+            // o offset aponta para o byte de deslocamento: PC = offset + 1
+            u16 pc = (u16)(loadAddr + r.offset + 1);
             i8 rel = (i8)((i16)symVal - (i16)pc);
             if (r.offset < exe.data.size ())
                 exe.data[r.offset] = (u8)rel;
@@ -100,8 +101,8 @@ int main (int argc, char **argv)
     {
         u16 target = hasLoadAddr ? loadAddr : exe.origin;
         std::cout << "Carregador Relocador: aplicando " << exe.relocs.size ()
-                  << " relocacao(oes) pendente(s) em 0x" << std::hex << target << std::dec
-                  << "\n";
+                  << " relocacao(oes) pendente(s) em 0x" << std::hex << target
+                  << std::dec << "\n";
         applyPendingRelocations (exe, target);
     }
     else if (hasLoadAddr && loadAddr != exe.origin)
@@ -115,7 +116,7 @@ int main (int argc, char **argv)
     cpu.loadBinary (exe.data, exe.origin);
 
     cpu.ioWrite = [] (u16 port, u8 val) {
-        if (port == 0x00)
+        if ((port & 0xFF) == 0x00)
             std::cout << (char)val << std::flush;
     };
     cpu.ioRead = [] (u16) -> u8 {
@@ -126,8 +127,8 @@ int main (int argc, char **argv)
     {
         if (trace)
         {
-            std::cout << std::hex << std::setw (4) << std::setfill ('0') << cpu.regs.PC
-                      << ": ";
+            std::cout << std::hex << std::setw (4) << std::setfill ('0')
+                      << cpu.regs.PC << ": ";
             printRegs (cpu);
         }
         cpu.step ();
